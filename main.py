@@ -1,12 +1,11 @@
 import streamlit as st
-import pandas as pd
+import openpyxl
 import google.generativeai as genai
-import os
-from dotenv import load_dotenv
 import sys
 import types
+import io
 
-# 1. 파이썬 최신 버전 호환성 패치 (cgi 모듈 에러 방지)
+# 1. 최신 파이썬 호환성 패치
 if "cgi" not in sys.modules:
     sys.modules["cgi"] = types.ModuleType("cgi")
 
@@ -16,8 +15,6 @@ st.set_page_config(page_title="제조 SOP 양식 유지 번역기", layout="wide
 # 3. 사이드바 설정
 with st.sidebar:
     st.title("⚙️ 설정")
-    
-    # API 키 확인 (Secrets에서 가져오거나 직접 입력)
     api_key = st.secrets.get("GOOGLE_API_KEY", "")
     if not api_key:
         api_key = st.text_input("Google API Key를 입력하세요", type="password")
@@ -26,11 +23,9 @@ with st.sidebar:
         genai.configure(api_key=api_key)
         st.success("✅ API 키 등록 완료")
     else:
-        st.error("❌ API 키 미등록 (번역 불가)")
+        st.error("❌ API 키 미등록")
 
     st.divider()
-    
-    # [언어 선택 기능 추가]
     st.header("🌐 번역 설정")
     target_lang = st.selectbox(
         "목표 언어 선택",
@@ -40,57 +35,60 @@ with st.sidebar:
 
 # 4. 메인 화면
 st.title("📄 제조 SOP 양식 유지 번역기")
-st.info(f"엑셀 파일을 업로드하면 양식을 유지한 채 **{target_lang}**로 번역합니다.")
+st.info(f"엑셀의 **테두리, 색상, 병합 상태**를 그대로 유지하며 내용만 **{target_lang}**로 번역합니다.")
 
-uploaded_file = st.file_uploader("엑셀 파일 업로드 (.xlsx)", type=["xlsx"])
+uploaded_file = st.file_uploader("SOP 엑셀 파일 업로드 (.xlsx)", type=["xlsx"])
 
 if uploaded_file and api_key:
-    try:
-        # 데이터 로드
-        df = pd.read_excel(uploaded_file)
-        
-        st.subheader("업로드된 데이터 미리보기")
-        st.dataframe(df.head())
-
-        if st.button(f"{target_lang}로 번역 시작"):
-            with st.spinner(f"Gemini AI가 {target_lang}로 번역 중입니다..."):
-                # 번역 모델 설정
-                model = genai.GenerativeModel('gemini-pro')
+    if st.button(f"{target_lang}로 양식 유지 번역 시작"):
+        try:
+            # 엑셀 로드 (data_only=False로 설정해야 수식/양식이 유지됨)
+            wb = openpyxl.load_workbook(uploaded_file)
+            model = genai.GenerativeModel('gemini-pro')
+            
+            # 번역 진행 상황 표시
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # 모든 시트 순회
+            for sheet in wb.worksheets:
+                total_cells = sheet.max_row * sheet.max_column
+                processed_count = 0
                 
-                def translate_text(text):
-                    if pd.isna(text) or str(text).strip() == "" or isinstance(text, (int, float)):
-                        return text
-                    try:
-                        # 프롬프트에 선택한 언어 반영
-                        prompt = f"Translate the following manufacturing SOP text into {target_lang}, keeping the professional tone and formatting: {text}"
-                        response = model.generate_content(prompt)
-                        return response.text
-                    except Exception:
-                        return text # 에러 발생 시 원문 유지
+                for row in sheet.iter_rows():
+                    for cell in row:
+                        processed_count += 1
+                        # 텍스트가 있는 셀만 번역
+                        if cell.value and isinstance(cell.value, str):
+                            status_text.text(f"번역 중: {cell.coordinate} 셀 처리 중...")
+                            try:
+                                prompt = f"Translate this manufacturing SOP text into {target_lang}. Keep technical terms if necessary and maintain a professional tone. Text: {cell.value}"
+                                response = model.generate_content(prompt)
+                                cell.value = response.text
+                            except:
+                                pass # 에러 시 원문 유지
+                        
+                        # 진행바 업데이트 (너무 자주 하면 느려지므로 적절히 조절)
+                        if processed_count % 10 == 0:
+                            progress_bar.progress(processed_count / total_cells)
 
-                # 전체 데이터 번역 수행
-                translated_df = df.copy()
-                for col in translated_df.columns:
-                    translated_df[col] = translated_df[col].apply(translate_text)
+            # 결과물 저장
+            output = io.BytesIO()
+            wb.save(output)
+            processed_data = output.getvalue()
 
-                st.success("✅ 번역 완료!")
-                st.subheader("번역 결과 확인")
-                st.dataframe(translated_df)
+            st.success("✅ 번역이 완료되었습니다!")
+            
+            st.download_button(
+                label="📂 번역된 엑셀 다운로드 (양식 유지됨)",
+                data=processed_data,
+                file_name=f"translated_{target_lang}_SOP.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
-                # 다운로드 버튼 생성
-                import io
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    translated_df.to_excel(writer, index=False)
-                
-                st.download_button(
-                    label="📂 번역된 엑셀 파일 다운로드",
-                    data=buffer.getvalue(),
-                    file_name=f"translated_sop_{target_lang}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-    except Exception as e:
-        st.error(f"파일 처리 중 오류 발생: {e}")
+        except Exception as e:
+            st.error(f"오류 발생: {e}")
+            st.info("엑셀 파일이 암호화되어 있거나 손상되었는지 확인해 주세요.")
 
 elif not api_key:
-    st.warning("왼쪽 사이드바에 API 키를 등록하거나 입력해 주세요.")
+    st.warning("왼쪽 사이드바에 API 키를 등록해 주세요.")
