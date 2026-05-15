@@ -14,7 +14,7 @@ if api_key:
     genai.configure(api_key=api_key)
     # 404 에러 방지를 위해 가장 표준적인 모델 명칭 사용
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash-lite')
     except Exception as e:
         st.error(f"모델 설정 오류: {e}")
 else:
