@@ -5,35 +5,34 @@ import io
 import time
 
 # 1. 페이지 설정
-st.set_page_config(page_title="제조 SOP 양식 유지 번역기", layout="wide")
-st.title("🏭 제조 SOP 양식 유지 번역기 (Gemini AI)")
+st.set_page_config(page_title="SOP 양식 유지 번역기", layout="wide")
+st.title("🏭 제조 SOP 양식 유지 번역기 (Gemini 엔진)")
 
-# 2. 사이드바 설정 (API 키 및 언어 선택)
+# 2. 사이드바 설정
 with st.sidebar:
     st.header("⚙️ 설정")
-    # Secrets에 등록된 키를 자동으로 불러옵니다.
+    # Secrets에 등록된 GOOGLE_API_KEY를 가져옵니다.
     api_key = st.secrets.get("GOOGLE_API_KEY", "")
     
     if api_key:
         genai.configure(api_key=api_key)
-        st.success("✅ 시스템 연결 완료")
+        st.success("✅ 시스템 정상 작동 중")
     else:
-        st.error("❌ API 키 미등록 (Secrets 설정 필요)")
+        st.error("❌ API 키를 Secrets에 등록해주세요.")
     
     st.divider()
-    target_lang = st.selectbox("목표 언어 선택", ["영어", "한국어", "중국어", "베트남어", "일본어"])
+    target_lang = st.selectbox("목표 언어", ["영어", "한국어", "중국어", "베트남어", "일본어"])
 
-# 3. 메인 로직 (사용자님의 기존 양식 유지 로직 적용)
+# 3. 번역 로직 (사용자님의 기존 양식 유지 방식 계승)
 uploaded_file = st.file_uploader("원본 SOP 엑셀 파일 업로드", type=["xlsx"])
 
 if uploaded_file and api_key:
     if st.button("양식 유지 번역 시작"):
         try:
-            # 엑셀 로드 (양식 보존)
             wb = load_workbook(uploaded_file)
-            model = genai.GenerativeModel('gemini-1.5-flash') # 속도가 빠른 모델 사용
+            model = genai.GenerativeModel('gemini-1.5-flash')
             
-            # 모든 시트에서 텍스트가 있는 셀만 수집
+            # 텍스트가 있는 모든 셀 수집
             all_cells = []
             for sheet in wb.worksheets:
                 for row in sheet.iter_rows():
@@ -44,30 +43,29 @@ if uploaded_file and api_key:
             progress_bar = st.progress(0)
             status_text = st.empty()
 
-            # 실제 번역 진행 (값만 교체)
             for i, cell in enumerate(all_cells):
                 status_text.text(f"⏳ 번역 중: {i+1}/{len(all_cells)} 셀 처리 중...")
                 try:
-                    # 전문 번역 프롬프트
+                    # Gemini 번역 요청 (에러 없는 방식)
                     prompt = f"Translate the following manufacturing SOP text into {target_lang}. Keep technical terms professional. Result only text: {cell.value}"
                     response = model.generate_content(prompt)
-                    if response and response.text:
-                        cell.value = response.text.strip()
+                    if response.text:
+                        cell.value = response.text.strip() # 셀 값만 교체 (양식 유지)
                 except:
-                    continue # 오류 시 원문 유지
+                    continue 
                 
                 progress_bar.progress((i + 1) / len(all_cells))
-                time.sleep(0.1) # 안정적 호출을 위한 지연
+                time.sleep(0.1)
 
             # 결과물 저장
             output = io.BytesIO()
             wb.save(output)
             
-            st.success("🎉 모든 번역과 양식 보존 작업이 완료되었습니다!")
+            st.success("🎉 번역이 완료되었습니다!")
             st.download_button(
                 label="📥 번역된 파일 다운로드",
                 data=output.getvalue(),
-                file_name=f"translated_SOP_{target_lang}.xlsx",
+                file_name=f"translated_SOP.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         except Exception as e:
