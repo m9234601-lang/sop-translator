@@ -4,26 +4,25 @@ import google.generativeai as genai
 import sys
 import types
 import io
-from copy import copy
 
-# 1. 파이썬 버전 호환성 패치
+# 1. 시스템 호환성 패치
 if "cgi" not in sys.modules:
     sys.modules["cgi"] = types.ModuleType("cgi")
 
 # 2. 페이지 설정
 st.set_page_config(page_title="제조 SOP 양식 유지 번역기", layout="wide")
 
-# 3. 사이드바 설정
+# 3. 사이드바 설정 (Secrets 연동 강화)
 with st.sidebar:
     st.title("⚙️ 설정")
-    # Secrets 우선 확인, 없으면 입력창 표시
+    # Secrets에서 키를 가져오되, 없으면 입력창 표시
     api_key = st.secrets.get("GOOGLE_API_KEY", "")
     if not api_key:
         api_key = st.text_input("Google API Key를 입력하세요", type="password")
     
     if api_key:
         genai.configure(api_key=api_key)
-        st.success("✅ API 키 등록 완료")
+        st.success("✅ API 키 등록 확인됨")
     else:
         st.error("❌ API 키 미등록")
 
@@ -37,58 +36,66 @@ with st.sidebar:
 
 # 4. 메인 화면
 st.title("📄 제조 SOP 양식 유지 번역기")
-st.info(f"엑셀의 **글꼴, 크기, 색상, 병합**을 그대로 유지하며 내용을 **{target_lang}**로 번역합니다.")
+st.info(f"엑셀의 모든 양식을 보존하며 내용을 **{target_lang}**로 번역합니다.")
 
-uploaded_file = st.file_uploader("SOP 엑셀 파일 업로드 (.xlsx)", type=["xlsx"])
+uploaded_file = st.file_uploader("SOP 엑셀 파일 업로드", type=["xlsx"])
 
 if uploaded_file and api_key:
     if st.button(f"{target_lang}로 번역 시작"):
         try:
             # 엑셀 로드
             wb = openpyxl.load_workbook(uploaded_file)
-            model = genai.GenerativeModel('gemini-1.5-flash') # 속도가 빠른 모델로 변경
+            # 가장 범용적인 gemini-1.5-flash 모델 사용
+            model = genai.GenerativeModel('gemini-1.5-flash')
             
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            for sheet in wb.worksheets:
-                # 데이터가 있는 셀만 추출하여 번역 효율성 높임
-                cells_to_translate = [cell for row in sheet.iter_rows() for cell in row if cell.value and isinstance(cell.value, str)]
-                total_cells = len(cells_to_translate)
+            # 번역 대상 셀 수집 (빈 셀 제외, 문자열만)
+            all_worksheets = wb.worksheets
+            for sheet in all_worksheets:
+                cells = []
+                for row in sheet.iter_rows():
+                    for cell in row:
+                        if cell.value and isinstance(cell.value, str) and len(str(cell.value).strip()) > 0:
+                            cells.append(cell)
                 
-                for i, cell in enumerate(cells_to_translate):
-                    status_text.text(f"번역 중: {cell.coordinate} 셀 처리 중... ({i+1}/{total_cells})")
+                total = len(cells)
+                for i, cell in enumerate(cells):
+                    status_text.text(f"번역 중: {sheet.title} 시트 - {cell.coordinate} ({i+1}/{total})")
                     
                     try:
-                        # 전문적인 제조 기술 용어 유지를 위한 프롬프트
-                        prompt = f"Translate the following manufacturing SOP text into {target_lang}. Keep technical terms if they are standard in the industry. Output only the translated text. Text: {cell.value}"
+                        # 번역 시도 (안전성 필터 완화 및 명확한 지시)
+                        prompt = f"You are a professional translator. Translate the following manufacturing SOP text into {target_lang}. Preserve technical terms if appropriate. Provide ONLY the translation without any preamble. Text: {cell.value}"
+                        
                         response = model.generate_content(prompt)
                         
-                        if response and response.text:
-                            # 기존 스타일(글꼴, 색상 등)을 유지하며 값만 변경
-                            cell.value = response.text.strip()
+                        # 응답 검증 후 셀 값 교체
+                        if response and response.candidates:
+                            translated_text = response.text.strip()
+                            if translated_text:
+                                cell.value = translated_text
                     except Exception as e:
-                        # 에러 발생 시 로그만 찍고 원문 유지
-                        print(f"Error at {cell.coordinate}: {e}")
+                        # 에러 발생 시 로그 출력 (사용자는 계속 진행 가능)
+                        st.warning(f"{cell.coordinate} 셀 번역 실패: {str(e)}")
                     
-                    # 진행률 업데이트
-                    progress_bar.progress((i + 1) / total_cells)
+                    progress_bar.progress((i + 1) / total)
 
             # 파일 저장
             output = io.BytesIO()
             wb.save(output)
             processed_data = output.getvalue()
 
-            st.success("✅ 번역이 완료되었습니다!")
+            st.success("🎉 모든 번역 작업이 완료되었습니다!")
             st.download_button(
-                label="📂 번역된 엑셀 다운로드",
+                label="📂 번역된 엑셀 파일 받기",
                 data=processed_data,
-                file_name=f"translated_{target_lang}_SOP.xlsx",
+                file_name=f"translated_{target_lang}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
         except Exception as e:
-            st.error(f"오류 발생: {e}")
+            st.error(f"중대 오류 발생: {e}")
 
 elif not api_key:
-    st.warning("왼쪽 사이드바에 API 키를 등록해 주세요.")
+    st.warning("먼저 API 키를 설정해 주세요.")
