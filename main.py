@@ -1,3 +1,7 @@
+import sys
+if "cgi" not in sys.modules:
+    import types
+    sys.modules["cgi"] = types.ModuleType("cgi")
 import streamlit as st
 import os
 import time
