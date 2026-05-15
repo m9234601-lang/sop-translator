@@ -5,80 +5,91 @@ from dotenv import load_dotenv
 from openpyxl import load_workbook
 import google.generativeai as genai
 from io import BytesIO
-import copy
 
-# 1. 초기 설정
+# 1. 환경 변수 및 Gemini 설정
 load_dotenv()
+# 스트림릿 Secrets 또는 .env에서 키를 가져옵니다.
 api_key = os.getenv("GOOGLE_API_KEY")
 
 if api_key:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('models/gemini-1.5-flash')
+    # 가장 안정적인 모델 명칭 사용
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+    except Exception as e:
+        st.error(f"모델 설정 중 오류 발생: {e}")
 else:
-    st.sidebar.error("❌ GOOGLE_API_KEY를 설정해주세요.")
+    st.sidebar.error("❌ GOOGLE_API_KEY가 설정되지 않았습니다.")
 
-lang_map = {"영어": "English", "중국어(간체)": "Simplified Chinese", "베트남어": "Vietnamese", "일본어": "Japanese"}
+lang_map = {
+    "영어": "English", 
+    "중국어(간체)": "Simplified Chinese", 
+    "베트남어": "Vietnamese", 
+    "일본어": "Japanese"
+}
 
-st.set_page_config(page_title="SOP 양식 유지 번역기", layout="wide")
-st.title("📑 제조 SOP 양식 완벽 보존 번역기")
+# 2. 페이지 레이아웃 설정
+st.set_page_config(page_title="제조 SOP 양식 보존 번역기", layout="wide")
+st.title("📑 제조 SOP 양식 완벽 보존 번역기 (Gemini)")
 
-target_lang = st.sidebar.selectbox("목표 언어", list(lang_map.keys()))
-uploaded_file = st.file_uploader("SOP 엑셀 업로드 (.xlsx)", type=["xlsx"])
+# 사이드바 설정
+target_lang_nm = st.sidebar.selectbox("목표 언어 선택", list(lang_map.keys()))
+target_lang_en = lang_map[target_lang_nm]
+
+uploaded_file = st.file_uploader("원본 SOP 엑셀 파일 업로드 (.xlsx)", type=["xlsx"])
 
 if uploaded_file and api_key:
-    # data_only=False가 핵심입니다. 수식과 양식을 그대로 가져옵니다.
+    # 양식 보존을 위해 data_only=False 설정
     wb = load_workbook(uploaded_file, data_only=False)
     ws = wb.active 
     
-    # 번역할 대상 추출 (데이터가 있는 셀만)
+    # 번역할 셀 수집 (문자열이 있는 셀만)
     target_cells = []
     for row in ws.iter_rows():
         for cell in row:
-            # 문자열이고, 공백이 아닌 경우에만 번역 대상으로 선정
             if cell.value and isinstance(cell.value, str) and str(cell.value).strip():
-                # 스타일 보존을 위해 셀 객체 자체를 저장
                 target_cells.append(cell)
     
-    st.info(f"✅ 양식 유지 모드: 총 {len(target_cells)}개의 텍스트 셀을 발견했습니다.")
+    st.success(f"✅ 총 {len(target_cells)}개의 텍스트 셀이 감지되었습니다. (양식 유지 모드)")
 
     if st.button("양식 보존 번역 시작"):
         progress_bar = st.progress(0)
+        status_text = st.empty()
         
         for i, cell in enumerate(target_cells):
             try:
-                # 제조 용어 보존을 위한 프롬프트 강화
-                prompt = f"""
-                You are a professional manufacturing engineer. 
-                Translate the following SOP text into {lang_map[target_lang]}.
-                - Maintain technical terms (e.g., Purging, Injection, Shot).
-                - Keep the tone professional and concise.
-                Text: {cell.value}
-                """
+                # 제조 전문 용어 보존을 위한 프롬프트
+                prompt = f"Translate the following manufacturing SOP text into {target_lang_en}. Maintain technical terms: {cell.value}"
                 
+                # 표준 호출 방식 (v1beta 에러 방지)
                 response = model.generate_content(prompt)
-                translated = response.text.strip()
                 
-                # 핵심: .value만 변경하면 openpyxl이 기존 cell.font, cell.border, cell.fill 등을 그대로 유지합니다.
-                cell.value = translated
+                if response and response.text:
+                    cell.value = response.text.strip()
                 
-                # 진행도 표시
+                # 진행률 표시
                 curr = (i + 1) / len(target_cells)
                 progress_bar.progress(curr)
-                time.sleep(0.5) # API 안정성을 위한 간격
+                status_text.text(f"⏳ 번역 진행 중... ({i+1}/{len(target_cells)})")
+                
+                # 무료 API 쿼터 제한 준수 (분당 요청 수 조절)
+                time.sleep(1.0) 
                 
             except Exception as e:
-                st.error(f"Error at {cell.coordinate}: {e}")
-                continue
+                # 개별 셀 오류 발생 시 건너뛰고 계속 진행
+                st.warning(f"⚠️ {cell.coordinate} 셀 번역 중 오류: {e}")
+                time.sleep(2.0)
 
-        # 결과 저장
+        # 결과 저장 (메모리 내)
         output = BytesIO()
         wb.save(output)
-        processed_data = output.getvalue()
         
-        st.success("🎉 양식 훼손 없이 번역이 완료되었습니다!")
+        st.balloons()
+        st.success(f"🎉 {target_lang_nm} 번역 완료! 아래 버튼을 눌러 다운로드하세요.")
+        
         st.download_button(
-            label="📥 번역된 엑셀 다운로드",
-            data=processed_data,
-            file_name=f"Fixed_Format_{target_lang}.xlsx",
+            label="📥 번역된 SOP 엑셀 다운로드",
+            data=output.getvalue(),
+            file_name=f"Translated_SOP_{target_lang_nm}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
